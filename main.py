@@ -20,7 +20,12 @@ redis = Redis(url=UPSTASH_REDIS_URL, token=UPSTASH_REDIS_TOKEN)
 
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins='*'
+    cors_allowed_origins='*',
+    ping_timeout=60,
+    ping_interval=25,
+    logger=True,
+    engineio_logger=True,
+    allow_upgrades=True
 )
 
 app = FastAPI()
@@ -31,6 +36,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 combined_app = socketio.ASGIApp(sio, app)
