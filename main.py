@@ -4,12 +4,16 @@ import socketio
 import os
 from supabase import create_client
 from upstash_redis import Redis
+from datetime import datetime
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-UPSTASH_REDIS_URL = os.getenv("UPSTASH_REDIS_URL")
-UPSTASH_REDIS_TOKEN = os.getenv("UPSTASH_REDIS_TOKEN")
-RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+UPSTASH_REDIS_URL = os.environ.get("UPSTASH_REDIS_URL", "")
+UPSTASH_REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_TOKEN", "")
+
+print("DEBUG SUPABASE_URL:", SUPABASE_URL)
+
+from supabase import create_client
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 redis = Redis(url=UPSTASH_REDIS_URL, token=UPSTASH_REDIS_TOKEN)
@@ -30,13 +34,11 @@ app.add_middleware(
 )
 
 combined_app = socketio.ASGIApp(sio, app)
-
 connected_users = {}
 
 @sio.event
 async def connect(sid, environ):
     print(f"Client connected: {sid}")
-    connected_users[sid] = sid
 
 @sio.event
 async def disconnect(sid):
@@ -44,32 +46,51 @@ async def disconnect(sid):
     connected_users.pop(sid, None)
 
 @sio.event
-async def send_notification(sid, data):
-    print(f"Notification received: {data}")
+async def register_user(sid, data):
+    username = data.get('username')
+    connected_users[username] = sid
+    print(f"User registered: {username} -> {sid}")
 
-    supabase.table("notifications").insert({
-        "message": data["message"],
-        "type": data.get("type", "info"),
-        "is_read": False
-    }).execute()
+@sio.event
+async def send_order_update(sid, data):
+    order_id = data.get('order_id')
+    customer = data.get('customer')
+    status = data.get('status')
+    message = data.get('message')
 
-    await sio.emit('receive_notification', {
-        'message': data['message'],
-        'type': data.get('type', 'info'),
-    })
+    notification = {
+        "order_id": order_id,
+        "customer": customer,
+        "status": status,
+        "message": message,
+        "is_read": False,
+        "created_at": datetime.utcnow().isoformat()
+    }
+
+    supabase.table("notifications").insert(notification).execute()
+
+    if customer in connected_users:
+        await sio.emit('order_update', notification, to=connected_users[customer])
+
+    await sio.emit('admin_update', notification)
 
 @app.get("/")
 async def home():
-    return {"status": "Notification server is running!"}
+    return {"status": "Order Notification server is running!"}
 
-@app.get("/health")
-async def health():
-    return {
-        "status": "healthy",
-        "connected_users": len(connected_users)
-    }
+@app.get("/notifications/{customer}")
+async def get_notifications(customer: str):
+    result = supabase.table("notifications")\
+        .select("*")\
+        .eq("customer", customer)\
+        .order("created_at", desc=True)\
+        .execute()
+    return {"notifications": result.data}
 
-@app.get("/notifications")
-async def get_notifications():
-    result = supabase.table("notifications").select("*").order("created_at", desc=True).execute()
+@app.get("/all-notifications")
+async def get_all_notifications():
+    result = supabase.table("notifications")\
+        .select("*")\
+        .order("created_at", desc=True)\
+        .execute()
     return {"notifications": result.data}
